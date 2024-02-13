@@ -8,3 +8,4 @@ tensorboard
 modelcards
 git+https://github.com/energy-based-model/Compositional-Visual-Generation-with-Composable-Diffusion-Models-PyTorch
 git+https://github.com/openai/CLIP.git
+wandb

@@ -23,6 +23,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
 from diffusers.utils.import_utils import is_xformers_available
 from huggingface_hub import HfFolder, Repository, whoami
+import wandb
 
 from diffusers import (
     AutoencoderKL,
@@ -320,6 +321,19 @@ def parse_args():
                         help="enable this by only optimizing weights using existing models.")
 
     parser.add_argument(
+        "--num_validation_images",
+        type=int,
+        default=4,
+        help="Number of images that should be generated during validation with `validation_prompt`.",
+    )
+    parser.add_argument(
+        "--validation_prompt",
+        type=str,
+        nargs='+',
+        default=None,
+        help="Prompt(s) that is/are used during validation to verify that the model is learning.",
+    )
+    parser.add_argument(
         "--validation_step",
         type=int,
         default=100,
@@ -592,6 +606,8 @@ def main():
     global_step = 0
     first_epoch = 0
 
+    print('I am alive')
+
     # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
@@ -646,7 +662,7 @@ def main():
 
     with open(path, "w") as f:
         json.dump(dataset_info, f)
-
+    last_step = False
     for epoch in range(first_epoch, args.num_train_epochs):
         text_encoder.train()
         for step, batch in enumerate(train_dataloader):
@@ -923,6 +939,7 @@ def main():
             accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
+                last_step = True
                 break
 
             if accelerator.sync_gradients and global_step % args.validation_step == 0:
@@ -957,34 +974,47 @@ def main():
                 else:
                     properties = []
 
-                if properties:
-                    for p, placeholder in zip(properties, placeholder_tokens):
-                        if p == "object":
-                            prompts.append(f"a photo of {placeholder}")
-                        else:
-                            prompts.append(f"a painting in the style of {placeholder}")
+                if args.validation_prompt is not None and len(args.validation_prompt) > 0:
+                    prompts = args.validation_prompt
                 else:
-                    for placeholder in placeholder_tokens:
-                        prompts.append(f"{placeholder}")
+                    if properties:
+                        for p, placeholder in zip(properties, placeholder_tokens):
+                            if p == "object":
+                                prompts.append(f"a photo of {placeholder}")
+                            else:
+                                prompts.append(f"a painting in the style of {placeholder}")
+                    else:
+                        for placeholder in placeholder_tokens:
+                            prompts.append(f"{placeholder}")
 
                 for prompt in prompts:
-                    image_list = pipeline(prompt, guidance_scale=7.5,
-                                          num_inference_steps=50, generator=generator)
-                    image = image_list.images[0]
-                    image.save(os.path.join(folder, f'{prompt}.png'))
-                    images.append(image)
+                    for i in range(args.num_validation_images):
+                        image_list = pipeline(prompt, guidance_scale=7.5,
+                                            num_inference_steps=50, generator=generator)
+                        image = image_list.images[0]
+                        image.save(os.path.join(folder, f'{prompt}.png'))
+                        images.append(image)
 
                 for tracker in accelerator.trackers:
                     if tracker.name == "tensorboard":
                         np_images = np.stack([np.asarray(img) for img in images])
-                        tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
+                        # tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC") # FIXES ERROR
+                    elif tracker.name == "wandb":
+                        tracker.log(
+                            {
+                                "validation": [
+                                    wandb.Image(image, caption=f"{i}: {prompts[i % len(prompts)]}") for i, image in enumerate(images)
+                                ]
+                            }
+                        )
                 del pipeline
                 torch.cuda.empty_cache()
 
         accelerator.wait_for_everyone()
 
         # Create the pipeline using the trained modules and save it.
-        if accelerator.is_main_process and global_step % args.checkpointing_steps == 0 and not args.test:
+        
+        if last_step or global_step % args.checkpointing_steps == 0:
             pipeline = StableDiffusionPipeline.from_pretrained(
                 args.pretrained_model_name_or_path,
                 text_encoder=accelerator.unwrap_model(text_encoder),
@@ -993,6 +1023,7 @@ def main():
                 tokenizer=tokenizer,
             )
             pipeline.save_pretrained(args.output_dir)
+            print('SAVED AT', args.output_dir)
             # Also save the newly trained embeddings
             save_progress(text_encoder, initializer_token_ids, accelerator, args)
             if args.add_weight_per_score:
