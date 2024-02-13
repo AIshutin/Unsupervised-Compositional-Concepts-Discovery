@@ -386,7 +386,7 @@ def main():
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
-        log_with="tensorboard",
+        log_with=args.report_to,
         logging_dir=logging_dir,
     )
 
@@ -554,6 +554,7 @@ def main():
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -579,7 +580,8 @@ def main():
     vae.to(accelerator.device, dtype=weight_dtype)
     unet.to(accelerator.device, dtype=weight_dtype)
 
-    args.max_train_steps = train_dataset.num_images * args.num_iters_per_image
+    # args.max_train_steps = train_dataset.num_images * args.num_iters_per_image
+    
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
@@ -605,8 +607,6 @@ def main():
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     global_step = 0
     first_epoch = 0
-
-    print('I am alive')
 
     # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
@@ -662,7 +662,7 @@ def main():
 
     with open(path, "w") as f:
         json.dump(dataset_info, f)
-    last_step = False
+    
     for epoch in range(first_epoch, args.num_train_epochs):
         text_encoder.train()
         for step, batch in enumerate(train_dataloader):
@@ -917,15 +917,19 @@ def main():
                 global_step += 1
                 if global_step % args.save_steps == 0:
                     save_progress(text_encoder, initializer_token_ids, accelerator, args)
+                    pipeline = StableDiffusionPipeline.from_pretrained(
+                        args.pretrained_model_name_or_path,
+                        text_encoder=accelerator.unwrap_model(text_encoder),
+                        vae=vae,
+                        unet=unet,
+                        tokenizer=tokenizer,
+                    )
+                    path = os.path.join(args.output_dir,  f'checkpoint-{global_step}')
+                    pipeline.save_pretrained(path)
+                    os.system(f"rm -r {path}/unet")
+                    os.system(f"rm -r {path}/vae")
                     if args.add_weight_per_score:
                         save_weights(concept_weights, args)
-
-                if global_step % args.checkpointing_steps == 0:
-                    if accelerator.is_main_process:
-                        if not args.test:
-                            save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            accelerator.save_state(save_path)
-                            logger.info(f"Saved state to {save_path}")
 
             logs = {"loss": loss.detach().item(),
                     "lr": lr_scheduler.get_last_lr()[0],
@@ -939,7 +943,6 @@ def main():
             accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
-                last_step = True
                 break
 
             if accelerator.sync_gradients and global_step % args.validation_step == 0:
@@ -968,25 +971,8 @@ def main():
                     torch.Generator(device=accelerator.device).manual_seed(args.seed)
                 )
                 images = []
-                prompts = []
-                if args.learnable_property != "":
-                    properties = [x.strip() for x in args.learnable_property.split(",")]
-                else:
-                    properties = []
-
-                if args.validation_prompt is not None and len(args.validation_prompt) > 0:
-                    prompts = args.validation_prompt
-                else:
-                    if properties:
-                        for p, placeholder in zip(properties, placeholder_tokens):
-                            if p == "object":
-                                prompts.append(f"a photo of {placeholder}")
-                            else:
-                                prompts.append(f"a painting in the style of {placeholder}")
-                    else:
-                        for placeholder in placeholder_tokens:
-                            prompts.append(f"{placeholder}")
-
+                prompts = args.validation_prompt
+                
                 for prompt in prompts:
                     for i in range(args.num_validation_images):
                         image_list = pipeline(prompt, guidance_scale=7.5,
@@ -1003,7 +989,7 @@ def main():
                         tracker.log(
                             {
                                 "validation": [
-                                    wandb.Image(image, caption=f"{i}: {prompts[i % len(prompts)]}") for i, image in enumerate(images)
+                                    wandb.Image(image, caption=f"{i}: {prompts[i // args.num_validation_images]}") for i, image in enumerate(images)
                                 ]
                             }
                         )
@@ -1011,31 +997,6 @@ def main():
                 torch.cuda.empty_cache()
 
         accelerator.wait_for_everyone()
-
-        # Create the pipeline using the trained modules and save it.
-        
-        if last_step or global_step % args.checkpointing_steps == 0:
-            pipeline = StableDiffusionPipeline.from_pretrained(
-                args.pretrained_model_name_or_path,
-                text_encoder=accelerator.unwrap_model(text_encoder),
-                vae=vae,
-                unet=unet,
-                tokenizer=tokenizer,
-            )
-            pipeline.save_pretrained(args.output_dir)
-            print('SAVED AT', args.output_dir)
-            # Also save the newly trained embeddings
-            save_progress(text_encoder, initializer_token_ids, accelerator, args)
-            if args.add_weight_per_score:
-                save_weights(concept_weights, args)
-
-            save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-            accelerator.save_state(save_path)
-            logger.info(f"Saved state to {save_path}")
-
-            if args.push_to_hub:
-                repo.push_to_hub(commit_message="End of training", blocking=False, auto_lfs_prune=True)
-
     accelerator.end_training()
 
 

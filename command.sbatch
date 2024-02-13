@@ -23,4 +23,4 @@ python -V
 conda list
 nvcc --version
 
-bash command.sh
+bash command.sh $1

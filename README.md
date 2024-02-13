@@ -1,3 +1,9 @@
+# Notes about fork differences
+
+Frozen pipeline parts are not saved. Distributed training probably doesn't work. Validation supports multiple user prompts.
+Made to be easily usable with [subject-driven-gen-eval](https://github.com/AIshutin/subject-driven-gen-eval).
+
+
 # Unsupervised Compositional Concepts Discovery <br> (ICCV 2023)
 
 <a href="https://energy-based-model.github.io/unsupervised-concept-discovery"><img src="https://img.shields.io/static/v1?label=Project&message=Website&color=red" height=20.5></a> 
