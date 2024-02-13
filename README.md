@@ -3,6 +3,12 @@
 Frozen pipeline parts are not saved. Distributed training probably doesn't work. Validation supports multiple user prompts.
 Made to be easily usable with [subject-driven-gen-eval](https://github.com/AIshutin/subject-driven-gen-eval).
 
+Run:
+
+```
+sbatch train_concept_discovery.sbatch dog
+```
+
 
 # Unsupervised Compositional Concepts Discovery <br> (ICCV 2023)
 
